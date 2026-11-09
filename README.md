@@ -148,7 +148,7 @@ safeStorage（OSCrypt）的 `v11` 封装，不是 HarmonyOS 的 `QASSET1\0` + AE
 
 | result | 处置 |
 |--------|------|
-| `NO_AUTH`（未运行） | 打开 Qoder CN 客户端并登录；cron 场景可保持客户端常驻，或设置 `QODER_ALLOW_OFFLINE=1`（确认登录态有效时） |
+| `NO_AUTH`（未运行） | 打开 Qoder CN 客户端并登录。cron 条目默认已带 `QODER_ALLOW_OFFLINE=1`，客户端没开也会用有效 token 签到；手动执行时可显式设置该变量 |
 | `NO_AUTH`（钥匙串） | 解锁桌面会话 / 登录 GNOME Keyring；确认 `secret-tool lookup application "Qoder CN App"` 能取到值；否则重新登录 Qoder |
 | `NO_SESSION` | token 过期或被吊销，打开客户端重新登录 |
 | `INACTIVE` | 当前没有 `CLAIM_BENEFIT` 活动；打开客户端活动页确认是否已结束 |
@@ -167,8 +167,10 @@ safeStorage（OSCrypt）的 `v11` 封装，不是 HarmonyOS 的 `QASSET1\0` + AE
 
 - **Trae 登录态约 7 天过期**（`auth.expiredAt`），过期后脚本报 `NO_SESSION`。
   打开一次 Trae 桌面端即可自动续期，无需改脚本。
-- **Qoder 登录态由客户端续期**；客户端未运行按验收约定报 `NO_AUTH` 并跳过，
-  需要离线签到可显式设置 `QODER_ALLOW_OFFLINE=1`。
+- **Qoder 登录态由客户端续期**；手动执行时客户端未运行会按验收约定报 `NO_AUTH`
+  并跳过，需要离线签到可显式设置 `QODER_ALLOW_OFFLINE=1`。
+- **cron 条目默认带 `QODER_ALLOW_OFFLINE=1`**，不依赖 Qoder 客户端常开；修改后
+  需要重新执行 `./run.sh install-cron` 才会更新 crontab。
 - 定时任务用 `flock -n` 加锁，上一次没跑完会直接跳过，不会并发叠加。
 - 每天 3 个时间点全部是幂等请求：没领到会自动重试，领到了就打印 `ALREADY` 直接返回。
 - Trae 服务端偶发 `9074` 是容量护栏，脚本会按 `0/5/20/45s` 退避重试 4 次。

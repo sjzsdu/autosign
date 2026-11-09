@@ -159,7 +159,9 @@ cron_lines() {
         # flock -n 防止上一次还没跑完又起一次
         #   stdout/stderr → logs/cron.out（人看的原始输出）
         #   log() 结构化行 → logs/autosign.log
-        printf '%s flock -n %s %s run >> %s 2>&1\n' \
+        # cron 默认带 QODER_ALLOW_OFFLINE=1：定时任务不应依赖 Qoder 客户端常开，
+        # 只要本地登录态 token 还有效就能签到；手动 ./run.sh 仍会先检查客户端。
+        printf '%s QODER_ALLOW_OFFLINE=1 flock -n %s %s run >> %s 2>&1\n' \
             "$entry" "$LOCK_FILE" "$SCRIPT_DIR/run.sh" "$LOG_DIR/cron.out"
     done
     printf '%s\n' "$CRON_END"
