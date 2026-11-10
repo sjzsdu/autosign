@@ -1,17 +1,21 @@
-# autosign — Trae CN / Qoder CN 每日签到
+# autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 每日签到
 
-纯官方接口、零第三方依赖、幂等可重复执行的每日签到脚本。不开 GUI、不模拟点击，
-直接读取本机桌面端已写出的登录态完成领取：Trae 每日 200 积分，Qoder 领取活动
-credits。
+幂等、可重复执行的每日签到脚本，把每天能领的 credits / 额度收敛成一条命令：
+Trae、Qoder、CodeBuddy 直接读本机桌面端登录态、走官方接口；豆包的写接口强制
+浏览器现场生成 `a_bogus` 签名，所以用 Playwright 驱动本机 Chrome 无头完成
+（只需扫码登录一次）。领取前都先查状态，今天领过就直接返回，不会重复领。
 
 ## 目录结构
 
 ```
 autosign/
-├── run.sh                  # 入口：签到 / 装 cron / 看日志
+├── run.sh                  # 入口：签到 / 豆包登录 / 装 cron / 看日志
 ├── scripts/
-│   ├── trae_signin.py      # Trae CN 签到（Python 标准库 + openssl）
-│   └── qoder_signin.py     # Qoder CN 签到（Python 标准库 + openssl + libsecret）
+│   ├── trae_signin.py      # Trae CN（Python 标准库 + openssl）
+│   ├── qoder_signin.py     # Qoder CN（Python 标准库 + openssl + libsecret）
+│   ├── codebuddy_signin.py # CodeBuddy（Python 标准库，读插件登录态）
+│   └── doubao_signin.py    # 豆包（Playwright + 本机 Chrome）
+├── .venv/                  # 可选：豆包用的 Playwright，不入库
 ├── logs/
 │   ├── autosign.log        # 结构化日志（每行 [时间] [级别] 内容）
 │   └── cron.out            # 定时任务的原始输出
@@ -23,6 +27,7 @@ autosign/
 ```bash
 ./run.sh                # 签到（幂等，重复跑无副作用）
 ./run.sh status         # 只查状态，不领取
+./run.sh doubao-login   # 豆包首次扫码登录（有窗口，只需一次）
 ./run.sh install-cron   # 安装定时任务：每天 09:07 / 15:07 / 21:07 各跑一次
 ./run.sh uninstall-cron # 卸载定时任务
 ./run.sh log 50         # 看最近 50 行日志
@@ -33,7 +38,16 @@ autosign/
 `1` 硬失败（网络、接口、风控），`2` 凭据/用法错误。
 
 依赖：`python3` + `openssl`，Ubuntu 默认自带，不需要 Node.js。Qoder 额外依赖
-系统的 libsecret/GNOME Keyring（桌面版 Ubuntu 默认自带）。
+系统的 libsecret/GNOME Keyring（桌面版 Ubuntu 默认自带）。豆包额外需要 Playwright
+和本机 Chrome/Chromium：
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install playwright   # 或 uv pip install
+./run.sh doubao-login                                      # 扫码一次
+```
+
+`run.sh` 检测到项目内 `.venv/bin/python3` 会优先使用；没装 Playwright 或没登录时
+只跳过豆包，不影响其余签到和 cron。
 
 ## 输出契约
 
@@ -50,12 +64,17 @@ autosign/
 | `INACTIVE` | 签到活动未开启 | 否 |
 | `PENDING` | 今日可领但未领取（`status` 模式） | 否 |
 | `NO_SESSION` | 登录态过期，需重新登录对应客户端 | 是 |
-| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行），需先登录客户端 | 是 |
+| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行；豆包还包括未扫码登录 / 未装 Playwright） | 是 |
 | `NETWORK` / `ERROR` | 网口或服务端异常 | 是 |
+
+`OK` 只由 `doubao_signin.py login` 使用，表示扫码登录成功（不参与每日签到结果判定）。
 
 `diag` 字段是排查用的现场快照：Trae 有 `app_version` / `package_type` / `req_source` /
 `os_name` / `device_model` / `device_id_set`，Qoder 有 `auth_source` / `campaigns` /
-`claimable` / `claimed` / `credits_source` / `expires`。任何情况下脚本都不会打印 token。
+`claimable` / `claimed` / `credits_source` / `expires`，CodeBuddy 有 `auth_file` /
+`domain` / `uid_set` / `token_expires_at` / `streak_days` / `theme`，豆包有
+`app_version` / `ua_samantha` / `state_file` / `state_exists` / `url` / `headless`。
+任何情况下脚本都不会打印 token / Cookie。
 
 ## 曾经的坑（已修复）
 
@@ -163,10 +182,60 @@ safeStorage（OSCrypt）的 `v11` 封装，不是 HarmonyOS 的 `QASSET1\0` + AE
 `QODER_CLIENT_TYPE`（默认 `10`）、`QODER_STATE_FILE`、`QODER_ALLOW_OFFLINE`、
 `QODER_PROCESS_MATCH`。
 
+## CodeBuddy
+
+CodeBuddy 的 IDE 插件登录后把明文登录态写在
+`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info`
+（Linux `~/.config/...`，Windows `%APPDATA%\...`），脚本直接读取：
+
+| 用途 | 请求 |
+|------|------|
+| 查状态 | `POST https://www.codebuddy.cn/v2/billing/meter/checkin-activity-status` |
+| 领取 | `POST https://www.codebuddy.cn/v2/billing/meter/daily-checkin` |
+
+请求头：`Authorization: Bearer <accessToken>`、`X-User-Id: <uid>`、
+`X-Domain: www.codebuddy.cn`，请求体 `{}`。状态接口一次返回活动名、连续天数
+`streak_days`、今日额度 `daily_credit` 和总余额 `total_credits`，领取成功返回
+`data.credit`。
+
+两个常见坑：`Authorization` 必须带 `Bearer ` 前缀（否则 401）；路径必须带
+`/v2/` 且用 `www.codebuddy.cn`（旧教程里的 `copilot.tencent.com/billing/...`
+会 404）。新版 WorkBuddy 桌面端把 token 改成 `$wbEncrypted` 信封加密，脚本不读它，
+请用 CodeBuddy IDE 的明文登录态；token 约 28 天过期，打开一次 IDE / 插件即可续期。
+
+## 豆包
+
+豆包的「天天领额度」写接口（签到、领奖）强制 `a_bogus` 动态签名，签名由网页 JS
+在真实浏览器里用参数 + 时间戳 + 指纹现场算出，只带 Cookie 裸调会被拒绝。所以脚本
+用 Playwright 开一个真实 Chromium：页面自己签名发请求，脚本只负责点「立即签到」。
+
+```bash
+./run.sh doubao-login   # 一次性：弹出浏览器 → 点登录 → 手机扫码
+./run.sh                # 之后无头自动签到
+```
+
+- 登录页用普通 Chrome UA（`SamanthaDoubao` UA 下不显示登录入口）；登录态（Cookie
+  + localStorage）存到 `~/.cache/autosign/doubao.state.json`（0600）。
+- 签到页必须用 `SamanthaDoubao/<客户端版本>` UA，否则提示「该活动仅支持在豆包电脑版
+  参与」。版本号自动读 `/Applications/Doubao.app` 的 `Info.plist`。
+- 判定顺序：卡片 `[data-reward-code="daily_signin"]` 显示「立即签到」才点击；显示
+  「已签到」直接返回 `ALREADY`；领取后重新读卡片复核，避免误报。
+- 登录态失效会跳回登录页，脚本识别后返回 `NO_SESSION` 并提示重新 `doubao-login`；
+  `run.sh` 对豆包的 `NO_AUTH` / `NO_SESSION` 只告警并跳过，不影响其他签到。
+
+调试开关：`DOUBAO_HEADED=1`（看得见窗口）、`DOUBAO_TIMEOUT`、`DOUBAO_LOGIN_TIMEOUT`、
+`DOUBAO_STATE_FILE`、`DOUBAO_CHECKIN_URL`、`DOUBAO_APP_VERSION`、
+`DOUBAO_BROWSER_CHANNEL`（默认自动找 Chrome/Edge）。失败时会截图到
+`~/.cache/autosign/doubao-error.png`；扫码登录时设 `DOUBAO_DEBUG_SHOT=/tmp/login.png`
+可把登录页截下来排查。
+
 ## 注意事项
 
 - **Trae 登录态约 7 天过期**（`auth.expiredAt`），过期后脚本报 `NO_SESSION`。
   打开一次 Trae 桌面端即可自动续期，无需改脚本。
+- **CodeBuddy token 约 28 天过期**；过期报 `NO_SESSION`，打开一次 IDE / 插件续期。
+- **豆包登录态由扫码会话维持**；失效后重跑 `./run.sh doubao-login` 即可。
+  豆包签到依赖本机 Chrome 与 Playwright，只影响豆包这一项。
 - **Qoder 登录态由客户端续期**；手动执行时客户端未运行会按验收约定报 `NO_AUTH`
   并跳过，需要离线签到可显式设置 `QODER_ALLOW_OFFLINE=1`。
 - **cron 条目默认带 `QODER_ALLOW_OFFLINE=1`**，不依赖 Qoder 客户端常开；修改后
@@ -179,7 +248,9 @@ safeStorage（OSCrypt）的 `v11` 封装，不是 HarmonyOS 的 `QASSET1\0` + AE
 
 签到接口协议与 `iCubeAuthInfo` 的 AES-128-CBC 解密布局参考了
 [agent-auto-signin](../agent-auto-signin)（MIT）中针对 macOS 的实现，本仓库在其基础上
-做了 Linux/Windows 适配与上述风控参数修正。
+做了 Linux/Windows 适配与上述风控参数修正。豆包的浏览器签到流程参考了社区里
+Playwright 方案的页面判定（`SamanthaDoubao` UA、签到卡片与登录引导），本仓库做了
+登录态持久化与统一的 JSON 输出适配。
 
 ## License
 

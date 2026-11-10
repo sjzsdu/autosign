@@ -1,21 +1,24 @@
 #!/bin/bash
 ## ============================================================
-## autosign — Trae CN / Qoder CN 每日签到（纯接口、零依赖）
+## autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 每日签到
 ##
 ## 用法:
 ##   ./run.sh                 签到（等价于 run，幂等可重复执行）
 ##   ./run.sh run             同上
 ##   ./run.sh status          只查状态，不领取
 ##   ./run.sh claim           只尝试领取
+##   ./run.sh doubao-login    豆包首次扫码登录（有窗口，只需一次）
 ##   ./run.sh install-cron    安装 crontab 定时任务（幂等）
 ##   ./run.sh uninstall-cron  卸载 crontab 定时任务
 ##   ./run.sh cron-entry      打印当前要写入 crontab 的内容（调试用）
 ##   ./run.sh log [行数]      查看最近的运行日志
 ##   ./run.sh help            本帮助
 ##
-## 依赖: python3 + openssl（Ubuntu 默认自带），无需 Node、无需 GUI。
-## Qoder 需要客户端保持登录；客户端未运行时会打印可操作提示并跳过，
-## 不影响 Trae 签到和 crontab 定时任务。
+## 依赖: python3 + openssl（Ubuntu 默认自带），无需 Node。
+## Trae / CodeBuddy 读本机登录态直连接口；Qoder 需要客户端保持登录；
+## 豆包需要一次性扫码登录（Playwright + 本机 Chrome，之后无头运行），
+## 未登录时只提示并跳过，不影响其他签到和 crontab 定时任务。
+## 若项目内有 .venv（装 Playwright 用），run.sh 会自动优先使用它。
 ## ============================================================
 
 set -uo pipefail
@@ -25,12 +28,19 @@ SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/autosign.log"
 LOCK_FILE="${TMPDIR:-/tmp}/autosign.lock"
-PYTHON="${PYTHON:-python3}"
+# 豆包签到依赖 Playwright；装在项目内 .venv 时优先使用它
+if [ -z "${PYTHON:-}" ]; then
+    if [ -x "$SCRIPT_DIR/.venv/bin/python3" ]; then
+        PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+    else
+        PYTHON="python3"
+    fi
+fi
 
-# 签到端点：Trae CN + Qoder CN。每个脚本独立输出一行 JSON、独立退出，
-# 单个失败不会中断其余签到。
+# 签到端点：Trae CN / Qoder CN / CodeBuddy / 豆包。每个脚本独立输出一行 JSON、
+# 独立退出，单个失败不会中断其余签到。
 # 注意：Qoder 的 /campaigns 接口必须带 Cosy-ClientType: 10，缺了会误报 INACTIVE。
-SIGNERS=("trae_signin.py" "qoder_signin.py")
+SIGNERS=("trae_signin.py" "qoder_signin.py" "codebuddy_signin.py" "doubao_signin.py")
 
 # 定时任务每天跑 3 次（错开高峰），全部幂等，重复执行无副作用
 CRON_SCHEDULE=("7 9 * * *" "7 15 * * *" "7 21 * * *")
@@ -105,13 +115,17 @@ run_one() {
             log INFO "$script CLAIMED: $report"
             return 0 ;;
         NO_AUTH|NO_SESSION)
-            # Qoder 的登录态依赖桌面客户端/系统钥匙串；未打开客户端属于
+            # Qoder 依赖桌面客户端/钥匙串，豆包依赖一次性扫码登录；未登录属于
             # 预期状态，提示后跳过，不让整轮 cron 失败。
-            if [ "$script" = "qoder_signin.py" ]; then
-                warn "  [$script] 跳过：$report"
-                log WARN "$script $result: $report"
-                return 0
-            fi
+            case "$script" in
+                qoder_signin.py|doubao_signin.py)
+                    warn "  [$script] 跳过：$report"
+                    log WARN "$script $result: $report"
+                    return 0 ;;
+            esac
+            # CodeBuddy 与 Trae 一致按硬失败处理：本机已安装 CodeBuddy，
+            # 出现 NO_AUTH 说明登录态丢失/文件被删，应当立刻发现并重新登录；
+            # 若部署到没装 CodeBuddy 的机器，请从 SIGNERS 里移除它，而不是静默跳过。
             err "  [$script] [$result] $report"
             log ERROR "$script $result: $report"
             return 1 ;;
@@ -201,6 +215,20 @@ cmd_uninstall_cron() {
     log INFO "crontab removed"
 }
 
+cmd_doubao_login() {
+    require_python || return 2
+    local path="$SCRIPTS_DIR/doubao_signin.py"
+    if [ ! -f "$path" ]; then
+        err "缺少 $path"
+        return 2
+    fi
+    say "打开浏览器扫码登录豆包（登录态保存到 ~/.cache/autosign/doubao.state.json）"
+    "$PYTHON" "$path" login
+    local rc=$?
+    log INFO "doubao login rc=$rc"
+    return $rc
+}
+
 cmd_log() {
     local n="${1:-40}"
     if [ ! -f "$LOG_FILE" ]; then
@@ -220,6 +248,7 @@ case "$cmd" in
     run|sign|签到)      cmd_run auto ;;
     status)             cmd_run status ;;
     claim)              cmd_run claim ;;
+    doubao-login|doubao_login|login) cmd_doubao_login ;;
     install-cron|install) cmd_install_cron ;;
     uninstall-cron|uninstall) cmd_uninstall_cron ;;
     cron-entry)         cron_lines ;;
