@@ -1,20 +1,23 @@
-# autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 每日签到
+# autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code 每日签到
 
 幂等、可重复执行的每日签到脚本，把每天能领的 credits / 额度收敛成一条命令：
 Trae、Qoder、CodeBuddy 直接读本机桌面端登录态、走官方接口；豆包的写接口强制
 浏览器现场生成 `a_bogus` 签名，所以用 Playwright 驱动本机 Chrome 无头完成
-（只需扫码登录一次）。领取前都先查状态，今天领过就直接返回，不会重复领。
+（只需扫码登录一次）。MiniMax Code 的签到走 `minimax-cloud` 网关，登录一次后
+用固定盐的 MD5 签名纯 HTTP 调用，日常签到不起浏览器。领取前都先查状态，
+今天领过就直接返回，不会重复领。
 
 ## 目录结构
 
 ```
 autosign/
-├── run.sh                  # 入口：签到 / 豆包登录 / 装 cron / 看日志
+├── run.sh                  # 入口：签到 / 豆包、MiniMax 登录 / 装 cron / 看日志
 ├── scripts/
 │   ├── trae_signin.py      # Trae CN（Python 标准库 + openssl）
 │   ├── qoder_signin.py     # Qoder CN（Python 标准库 + openssl + libsecret）
 │   ├── codebuddy_signin.py # CodeBuddy（Python 标准库，读插件登录态）
-│   └── doubao_signin.py    # 豆包（Playwright + 本机 Chrome）
+│   ├── doubao_signin.py    # 豆包（Playwright + 本机 Chrome）
+│   └── minimax_signin.py   # MiniMax Code（Python 标准库，读本地登录态）
 ├── .venv/                  # 可选：豆包用的 Playwright，不入库
 ├── logs/
 │   ├── autosign.log        # 结构化日志（每行 [时间] [级别] 内容）
@@ -28,6 +31,7 @@ autosign/
 ./run.sh                # 签到（幂等，重复跑无副作用）
 ./run.sh status         # 只查状态，不领取
 ./run.sh doubao-login   # 豆包首次扫码登录（有窗口，只需一次）
+./run.sh minimax-login  # MiniMax Code 首次登录（有窗口，只需一次）
 ./run.sh install-cron   # 安装定时任务：每天 09:07 / 15:07 / 21:07 各跑一次
 ./run.sh uninstall-cron # 卸载定时任务
 ./run.sh log 50         # 看最近 50 行日志
@@ -79,7 +83,7 @@ Qoder 客户端没开也会用有效 token 签到。
 | `INACTIVE` | 签到活动未开启 | 否 |
 | `PENDING` | 今日可领但未领取（`status` 模式） | 否 |
 | `NO_SESSION` | 登录态过期，需重新登录对应客户端 | 是 |
-| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行；豆包还包括未扫码登录 / 未装 Playwright） | 是 |
+| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行；豆包还包括未扫码登录 / 未装 Playwright；MiniMax 还包括未登录） | 是 |
 | `NETWORK` / `ERROR` | 网口或服务端异常 | 是 |
 
 `OK` 只由 `doubao_signin.py login` 使用，表示扫码登录成功（不参与每日签到结果判定）。
@@ -88,7 +92,8 @@ Qoder 客户端没开也会用有效 token 签到。
 `os_name` / `device_model` / `device_id_set`，Qoder 有 `auth_source` / `campaigns` /
 `claimable` / `claimed` / `credits_source` / `expires`，CodeBuddy 有 `auth_file` /
 `domain` / `uid_set` / `token_expires_at` / `streak_days` / `theme`，豆包有
-`app_version` / `ua_samantha` / `state_file` / `state_exists` / `url` / `headless`。
+`app_version` / `ua_samantha` / `state_file` / `state_exists` / `url` / `headless`，
+MiniMax 有 `state_file` / `user_id_set` / `today_status`。
 任何情况下脚本都不会打印 token / Cookie。
 
 ## 曾经的坑（已修复）
@@ -244,6 +249,31 @@ CodeBuddy 的 IDE 插件登录后把明文登录态写在
 `~/.cache/autosign/doubao-error.png`；扫码登录时设 `DOUBAO_DEBUG_SHOT=/tmp/login.png`
 可把登录页截下来排查。
 
+## MiniMax Code
+
+MiniMax Code 的「每日签到」在 `agent.minimax.cn` 的 `minimax-cloud` 网关：
+
+| 用途 | 请求 |
+|------|------|
+| 查面板 | `GET /minimax-cloud/api/v1/signin/status` |
+| 领取 | `POST /minimax-cloud/api/v1/signin/claim`（body `{}`） |
+
+鉴权照抄网页端，三个要点缺一个就是 401：
+
+- 头 `token: <JWT>`（**不是** `Authorization`）；
+- 查询参数带 `user_id`（网页端取 `localStorage.user_detail_agent.realUserID`）；
+- 头 `x-timestamp`（秒）+ `x-signature = md5(timestamp + 固定盐 + 请求体原文)`，
+  盐写死在前端包里（`I*7Cf%WZ#S&%1RlZJ&C2`）。`yy` 指纹头不校验，可以不带。
+
+登录态：网页端把 JWT 放在 `localStorage._token`，脚本复用豆包的做法——一次性
+`./run.sh minimax-login` 开有头 Chrome 人工登录，把 Playwright `storage_state`
+存到 `~/.cache/autosign/minimax.state.json`（0600）；之后完全用标准库发 HTTP，
+不启动浏览器。面板 `days[].status`：`1` 未开始、`2` 可领取、`3` 已领取、
+`4` 停用；只在 `2` 时发 claim，重复执行返回 `ALREADY`。
+
+JWT 过期会返回 `NO_SESSION` 并提示重新 `minimax-login`，`run.sh` 只告警跳过。
+调试开关：`MINIMAX_API_BASE`、`MINIMAX_TIMEOUT`。
+
 ## 注意事项
 
 - **Trae 登录态约 7 天过期**（`auth.expiredAt`），过期后脚本报 `NO_SESSION`。
@@ -251,6 +281,8 @@ CodeBuddy 的 IDE 插件登录后把明文登录态写在
 - **CodeBuddy token 约 28 天过期**；过期报 `NO_SESSION`，打开一次 IDE / 插件续期。
 - **豆包登录态由扫码会话维持**；失效后重跑 `./run.sh doubao-login` 即可。
   豆包签到依赖本机 Chrome 与 Playwright，只影响豆包这一项。
+- **MiniMax Code 登录态是网页 JWT**；过期报 `NO_SESSION`，重跑
+  `./run.sh minimax-login` 登录一次即可，日常签到不依赖浏览器。
 - **Qoder 登录态由客户端续期**；手动执行时客户端未运行会按验收约定报 `NO_AUTH`
   并跳过，需要离线签到可显式设置 `QODER_ALLOW_OFFLINE=1`。
 - **cron 条目默认带 `QODER_ALLOW_OFFLINE=1`**，不依赖 Qoder 客户端常开；修改后
