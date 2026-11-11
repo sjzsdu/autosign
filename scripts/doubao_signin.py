@@ -327,6 +327,15 @@ def _card_text(page):
     return None
 
 
+def _card_rewarded(page):
+    """卡片进入「已签到」态时不再显示按钮，只在右侧渲染一个勾选图标。"""
+    try:
+        el = page.query_selector('[data-reward-code="daily_signin"] [class*="rewarded"]')
+        return el is not None and el.is_visible()
+    except Exception:
+        return False
+
+
 def _shot(page):
     try:
         os.makedirs(os.path.dirname(ERROR_SHOT), exist_ok=True)
@@ -413,7 +422,8 @@ def do_checkin(claim=True):
 
             scope = card if card is not None else body
             pending = "立即签到" in scope
-            already = (not pending) and ("已签到" in scope or "已签到" in body)
+            already = (not pending) and (_card_rewarded(page) or "已签到" in scope
+                                         or "已签到" in body)
 
             if already:
                 return 0, {"result": "ALREADY", "diag": base,
@@ -444,12 +454,13 @@ def do_checkin(claim=True):
             card2 = _card_text(page)
             scope2 = card2 if card2 is not None else body2
             amt = _amount(body2)
-            base["signed_in_after"] = "已签到" in scope2
+            rewarded2 = _card_rewarded(page)
+            base["signed_in_after"] = rewarded2 or "已签到" in scope2
 
             _save_state(ctx)
 
             if "签到成功" in body2 or "领取成功" in body2 or "已签到" in scope2 \
-                    or "已签到" in body2:
+                    or "已签到" in body2 or rewarded2:
                 got = amt
                 return 0, {"result": "CLAIMED", "diag": base, "credits": got,
                            "report": ("成功领取 %s 额度" % got if got else "签到成功")}

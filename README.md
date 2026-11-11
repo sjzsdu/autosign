@@ -49,6 +49,21 @@ python3 -m venv .venv && .venv/bin/pip install playwright   # 或 uv pip install
 `run.sh` 检测到项目内 `.venv/bin/python3` 会优先使用；没装 Playwright 或没登录时
 只跳过豆包，不影响其余签到和 cron。
 
+## 定时执行（macOS）
+
+macOS 上不要用 `install-cron`（cron 已废弃、休眠错过不补跑），改用 LaunchAgent：
+
+```bash
+launchctl print gui/$(id -u)/com.juzhongsun.autosign       # 查看状态
+launchctl kickstart -k gui/$(id -u)/com.juzhongsun.autosign # 立即触发一次
+launchctl bootout gui/$(id -u)/com.juzhongsun.autosign      # 停用定时任务
+```
+
+已安装的任务：`~/Library/LaunchAgents/com.juzhongsun.autosign.plist`，每天 09:07 和
+21:07 各跑一次 `run.sh run`；输出写到 `logs/launchd.out` / `logs/launchd.err`，
+错过的时间点在开机后由 launchd 补跑。plist 里带了 `QODER_ALLOW_OFFLINE=1`，
+Qoder 客户端没开也会用有效 token 签到。
+
 ## 输出契约
 
 每个签到脚本输出一行 JSON，人话在 `report` 字段：
