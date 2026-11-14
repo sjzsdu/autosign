@@ -1,14 +1,16 @@
 #!/bin/bash
 ## ============================================================
-## autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code 每日签到
+## autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code / 千问办公 每日签到
 ##
 ## 用法:
 ##   ./run.sh                 签到（等价于 run，幂等可重复执行）
 ##   ./run.sh run             同上
+##   ./run.sh doctor          环境体检：缺什么、去哪装、下一步做什么（--verify 真实查状态）
 ##   ./run.sh status          只查状态，不领取
 ##   ./run.sh claim           只尝试领取
 ##   ./run.sh doubao-login    豆包首次扫码登录（有窗口，只需一次）
 ##   ./run.sh minimax-login   MiniMax Code 首次登录（有窗口，只需一次）
+##   ./run.sh qwenwork-login  千问办公首次登录（有窗口，只需一次）
 ##   ./run.sh install-cron    安装 crontab 定时任务（幂等）
 ##   ./run.sh uninstall-cron  卸载 crontab 定时任务
 ##   ./run.sh cron-entry      打印当前要写入 crontab 的内容（调试用）
@@ -19,6 +21,7 @@
 ## Trae / CodeBuddy 读本机登录态直连接口；Qoder 需要客户端保持登录；
 ## 豆包需要一次性扫码登录（Playwright + 本机 Chrome，之后无头运行），
 ## MiniMax Code 需要一次性网页登录（登录态存本地，之后纯 HTTP 请求），
+## 千问办公没有手动签到（每日积分 00:00 自动发放），脚本只做每日自动登录 + 积分核对，
 ## 未登录时只提示并跳过，不影响其他签到和 crontab 定时任务。
 ## 若项目内有 .venv（装 Playwright 用），run.sh 会自动优先使用它。
 ## ============================================================
@@ -39,10 +42,10 @@ if [ -z "${PYTHON:-}" ]; then
     fi
 fi
 
-# 签到端点：Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code。每个脚本独立输出
+# 签到端点：Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code / 千问办公。每个脚本独立输出
 # 一行 JSON、独立退出，单个失败不会中断其余签到。
 # 注意：Qoder 的 /campaigns 接口必须带 Cosy-ClientType: 10，缺了会误报 INACTIVE。
-SIGNERS=("trae_signin.py" "qoder_signin.py" "codebuddy_signin.py" "doubao_signin.py" "minimax_signin.py")
+SIGNERS=("trae_signin.py" "qoder_signin.py" "codebuddy_signin.py" "doubao_signin.py" "minimax_signin.py" "qwenwork_signin.py")
 
 # 定时任务每天跑 3 次（错开高峰），全部幂等，重复执行无副作用
 CRON_SCHEDULE=("7 9 * * *" "7 15 * * *" "7 21 * * *")
@@ -117,10 +120,10 @@ run_one() {
             log INFO "$script CLAIMED: $report"
             return 0 ;;
         NO_AUTH|NO_SESSION)
-            # Qoder 依赖桌面客户端/钥匙串，豆包和 MiniMax 依赖一次性登录；未登录
+            # Qoder 依赖桌面客户端/钥匙串，豆包、MiniMax 和千问办公依赖一次性登录；未登录
             # 属于预期状态，提示后跳过，不让整轮 cron 失败。
             case "$script" in
-                qoder_signin.py|doubao_signin.py|minimax_signin.py)
+                qoder_signin.py|doubao_signin.py|minimax_signin.py|qwenwork_signin.py)
                     warn "  [$script] 跳过：$report"
                     log WARN "$script $result: $report"
                     return 0 ;;
@@ -162,6 +165,18 @@ cmd_run() {
     err "完成：$failed/$total 项失败"
     log ERROR "run finished: $failed/$total failed"
     return 1
+}
+
+# ------------------------------------------------------------------ 环境体检
+cmd_doctor() {
+    if ! command -v "$PYTHON" >/dev/null 2>&1; then
+        err "未找到 python3，请先安装 Python 3.8+：https://www.python.org/downloads/"
+        return 2
+    fi
+    "$PYTHON" "$SCRIPTS_DIR/doctor.py" "$@"
+    local rc=$?
+    log INFO "doctor rc=$rc"
+    return $rc
 }
 
 # ------------------------------------------------------------------ crontab
@@ -245,6 +260,20 @@ cmd_minimax_login() {
     return $rc
 }
 
+cmd_qwenwork_login() {
+    require_python || return 2
+    local path="$SCRIPTS_DIR/qwenwork_signin.py"
+    if [ ! -f "$path" ]; then
+        err "缺少 $path"
+        return 2
+    fi
+    say "打开浏览器登录千问办公（登录态保存到 ~/.cache/autosign/qwenwork.state.json）"
+    "$PYTHON" "$path" login
+    local rc=$?
+    log INFO "qwenwork login rc=$rc"
+    return $rc
+}
+
 cmd_log() {
     local n="${1:-40}"
     if [ ! -f "$LOG_FILE" ]; then
@@ -262,10 +291,12 @@ usage() {
 cmd="${1:-run}"
 case "$cmd" in
     run|sign|签到)      cmd_run auto ;;
+    doctor|check|体检)  shift; cmd_doctor "$@" ;;
     status)             cmd_run status ;;
     claim)              cmd_run claim ;;
     doubao-login|doubao_login|login) cmd_doubao_login ;;
     minimax-login|minimax_login) cmd_minimax_login ;;
+    qwenwork-login|qwenwork_login) cmd_qwenwork_login ;;
     install-cron|install) cmd_install_cron ;;
     uninstall-cron|uninstall) cmd_uninstall_cron ;;
     cron-entry)         cron_lines ;;

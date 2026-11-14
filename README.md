@@ -1,11 +1,12 @@
-# autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code 每日签到
+# autosign — Trae CN / Qoder CN / CodeBuddy / 豆包 / MiniMax Code / 千问办公 每日签到
 
 幂等、可重复执行的每日签到脚本，把每天能领的 credits / 额度收敛成一条命令：
 Trae、Qoder、CodeBuddy 直接读本机桌面端登录态、走官方接口；豆包的写接口强制
 浏览器现场生成 `a_bogus` 签名，所以用 Playwright 驱动本机 Chrome 无头完成
 （只需扫码登录一次）。MiniMax Code 的签到走 `minimax-cloud` 网关，登录一次后
-用固定盐的 MD5 签名纯 HTTP 调用，日常签到不起浏览器。领取前都先查状态，
-今天领过就直接返回，不会重复领。
+用固定盐的 MD5 签名纯 HTTP 调用，日常签到不起浏览器。千问办公（QwenWork）没有
+手动签到，每日积分由服务端 00:00 自动发放，脚本只做每日自动登录与积分核对。
+领取前都先查状态，今天领过就直接返回，不会重复领。
 
 ## 目录结构
 
@@ -17,7 +18,9 @@ autosign/
 │   ├── qoder_signin.py     # Qoder CN（Python 标准库 + openssl + libsecret）
 │   ├── codebuddy_signin.py # CodeBuddy（Python 标准库，读插件登录态）
 │   ├── doubao_signin.py    # 豆包（Playwright + 本机 Chrome）
-│   └── minimax_signin.py   # MiniMax Code（Python 标准库，读本地登录态）
+│   ├── minimax_signin.py   # MiniMax Code（Python 标准库，读本地登录态）
+│   ├── qwenwork_signin.py  # 千问办公（Python 标准库，登录保活 + 积分核对）
+│   └── doctor.py           # 环境体检：缺什么、去哪装、下一步做什么
 ├── .venv/                  # 可选：豆包用的 Playwright，不入库
 ├── logs/
 │   ├── autosign.log        # 结构化日志（每行 [时间] [级别] 内容）
@@ -28,17 +31,37 @@ autosign/
 ## 快速开始
 
 ```bash
+./run.sh doctor         # 首次使用先跑这个：体检环境 + 输出下一步操作
 ./run.sh                # 签到（幂等，重复跑无副作用）
 ./run.sh status         # 只查状态，不领取
 ./run.sh doubao-login   # 豆包首次扫码登录（有窗口，只需一次）
 ./run.sh minimax-login  # MiniMax Code 首次登录（有窗口，只需一次）
+./run.sh qwenwork-login # 千问办公首次登录（有窗口，只需一次）
 ./run.sh install-cron   # 安装定时任务：每天 09:07 / 15:07 / 21:07 各跑一次
 ./run.sh uninstall-cron # 卸载定时任务
 ./run.sh log 50         # 看最近 50 行日志
 ./run.sh help
 ```
 
-退出码：`0` 正常（含 `CLAIMED` / `ALREADY` / `INACTIVE` / `PENDING`），
+## 环境体检（doctor）
+
+第一次接触这个仓库，先跑：
+
+```bash
+./run.sh doctor
+```
+
+它会检查 Python / openssl / Playwright / 浏览器 / 定时任务，再逐个平台报告
+“已安装且已登录 / 已安装但未登录 / 未安装”，缺的给出官方下载地址和需要执行的
+命令，最后输出一份按顺序执行的启动清单（装客户端 → 登录 → 验证 → 签到 → 定时）。
+
+- `./run.sh doctor --verify`：额外用 `status` 模式真实请求一次各平台接口，
+  确认登录态和网络是否真的可用（只查状态，不领取）。
+- 退出码：至少一个平台可直接签到且基础依赖齐全时为 `0`，否则为 `1`。
+- Qoder 的登录态解密按 Linux 的 Chromium/libsecret 实现，macOS / Windows 上会
+  标记为“已跳过”，不影响其他平台；Trae / CodeBuddy 过期后打开客户端即可续期。
+
+签到脚本退出码：`0` 正常（含 `CLAIMED` / `ALREADY` / `INACTIVE` / `PENDING`），
 `1` 硬失败（网络、接口、风控），`2` 凭据/用法错误。
 
 依赖：`python3` + `openssl`，Ubuntu 默认自带，不需要 Node.js。Qoder 额外依赖
@@ -83,7 +106,7 @@ Qoder 客户端没开也会用有效 token 签到。
 | `INACTIVE` | 签到活动未开启 | 否 |
 | `PENDING` | 今日可领但未领取（`status` 模式） | 否 |
 | `NO_SESSION` | 登录态过期，需重新登录对应客户端 | 是 |
-| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行；豆包还包括未扫码登录 / 未装 Playwright；MiniMax 还包括未登录） | 是 |
+| `NO_AUTH` | 本机没找到凭据（Qoder 还包括客户端未运行；豆包还包括未扫码登录 / 未装 Playwright；MiniMax / 千问办公还包括未登录） | 是 |
 | `NETWORK` / `ERROR` | 网口或服务端异常 | 是 |
 
 `OK` 只由 `doubao_signin.py login` 使用，表示扫码登录成功（不参与每日签到结果判定）。
@@ -93,7 +116,8 @@ Qoder 客户端没开也会用有效 token 签到。
 `claimable` / `claimed` / `credits_source` / `expires`，CodeBuddy 有 `auth_file` /
 `domain` / `uid_set` / `token_expires_at` / `streak_days` / `theme`，豆包有
 `app_version` / `ua_samantha` / `state_file` / `state_exists` / `url` / `headless`，
-MiniMax 有 `state_file` / `user_id_set` / `today_status`。
+MiniMax 有 `state_file` / `user_id_set` / `today_status`，千问办公有 `state_file` /
+`cookie_count` / `user_id_set` / `daily_credits` / `monthly_credits` / `longterm_credits`。
 任何情况下脚本都不会打印 token / Cookie。
 
 ## 曾经的坑（已修复）
@@ -274,6 +298,40 @@ MiniMax Code 的「每日签到」在 `agent.minimax.cn` 的 `minimax-cloud` 网
 JWT 过期会返回 `NO_SESSION` 并提示重新 `minimax-login`，`run.sh` 只告警跳过。
 调试开关：`MINIMAX_API_BASE`、`MINIMAX_TIMEOUT`。
 
+## 千问办公（QwenWork）
+
+先说结论：**千问办公没有手动签到按钮，也没有 claim 类接口**。我在网页端 App
+包里检索「签到 / 领取 / 任务中心」均为 0 命中；积分页（`/app/credits`）只有
+「每日刷新积分 / 月度积分 / 长期积分」三类余额。官方公告的「每日登录送积分」
+活动已于 2026-08-09 结束，规则本身就是「每日 00:00 系统统一发放」。现在的
+「每日刷新积分」同样是每天 00:00 自动刷新，脚本无法"领取"更多。
+
+所以这里的脚本只做两件事，不会伪造 `CLAIMED`：
+
+1. 用保存的登录态请求一次 `/biz/user/v1/auth/me`（等效于每日首次登录），
+   验证登录态是否还有效；
+2. 读 `/user/v2/quota`，报告今日「每日刷新积分」余额，确认权益已到账。
+
+| 用途 | 请求 |
+|------|------|
+| 我是谁 | `GET https://qwenwork.cn/biz/user/v1/auth/me` |
+| 积分余额 | `GET https://qwenwork.cn/user/v2/quota` |
+
+接口与网页端完全一致：同源、Cookie 鉴权（网页端 `withCredentials`），响应信封
+`{"code": "ok", "data": {...}}`，请求头只需 `X-Client-Source: web`。
+
+```bash
+./run.sh qwenwork-login   # 一次性：弹出浏览器 → 阿里云账号扫码 / 手机号登录
+./run.sh                  # 之后每天自动登录一次并核对积分
+```
+
+登录态（Playwright `storage_state`）存到 `~/.cache/autosign/qwenwork.state.json`，
+日常不启动浏览器。结果语义：`ALREADY`（登录有效且每日积分已到账）、
+`INACTIVE`（账号没有每日积分权益）、`NO_SESSION`（Cookie 失效，需重新登录）。
+Cookie 失效时 `run.sh` 只告警跳过，不影响其他签到。
+
+调试开关：`QWENWORK_API_BASE`、`QWENWORK_TIMEOUT`。
+
 ## 注意事项
 
 - **Trae 登录态约 7 天过期**（`auth.expiredAt`），过期后脚本报 `NO_SESSION`。
@@ -283,6 +341,9 @@ JWT 过期会返回 `NO_SESSION` 并提示重新 `minimax-login`，`run.sh` 只�
   豆包签到依赖本机 Chrome 与 Playwright，只影响豆包这一项。
 - **MiniMax Code 登录态是网页 JWT**；过期报 `NO_SESSION`，重跑
   `./run.sh minimax-login` 登录一次即可，日常签到不依赖浏览器。
+- **千问办公没有手动签到**，每日积分由服务端在 00:00 自动发放；脚本只做登录
+  保活与积分核对。Cookie 失效报 `NO_SESSION`，重跑 `./run.sh qwenwork-login`
+  登录一次即可。
 - **Qoder 登录态由客户端续期**；手动执行时客户端未运行会按验收约定报 `NO_AUTH`
   并跳过，需要离线签到可显式设置 `QODER_ALLOW_OFFLINE=1`。
 - **cron 条目默认带 `QODER_ALLOW_OFFLINE=1`**，不依赖 Qoder 客户端常开；修改后
