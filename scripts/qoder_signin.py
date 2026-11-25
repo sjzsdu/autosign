@@ -119,13 +119,18 @@ def diag_base():
 # ------------------------------------------------------------------ 进程检查
 
 def qoder_running():
-    """检查 Qoder 主进程是否在运行。
-
-    只认主进程：排除 Electron 的 --type= 子进程、SDK worker、MCP daemon 等，
-    避免残留辅助进程被误判成客户端已打开。QODER_PROCESS_MATCH 便于测试/定制。
-    """
+    """检查 Qoder 主进程是否在运行。"""
     if os.environ.get("QODER_ALLOW_OFFLINE", "").lower() in ("1", "true", "yes", "on"):
         return True
+    if sys.platform == "darwin":
+        pattern = os.environ.get("QODER_PROCESS_MATCH", r"Qoder[^/]*\.app/Contents/MacOS/")
+        try:
+            proc = subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=3)
+            return proc.returncode == 0
+        except Exception:
+            return False
+
     pattern = os.environ.get("QODER_PROCESS_MATCH", "qoder-cn")
     skip_flags = ("--type=", "--eval", "--sdk", "--utility-sub-type=",
                   "mcp-bridge", "daemon-server", "qoder-worker-runtime")
@@ -250,11 +255,25 @@ def _secret_tool_lookup(app_name):
     return None
 
 
+def _macos_keychain_lookup(app_name):
+    """通过 macOS login keychain 读取 Chromium Safe Storage 口令。"""
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password", "-s", app_name + " Safe Storage", "-w"],
+            capture_output=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def get_keyring_password():
     """返回 (password_bytes, source) 或 (None, None)。"""
-    for source, fn in (("libsecret", _libsecret_lookup),
-                       ("gi", _gi_lookup),
-                       ("secret-tool", _secret_tool_lookup)):
+    backends = (("security", _macos_keychain_lookup),) if sys.platform == "darwin" else (
+        ("libsecret", _libsecret_lookup), ("gi", _gi_lookup),
+        ("secret-tool", _secret_tool_lookup))
+    for source, fn in backends:
         try:
             pw = fn(KEYRING_APP)
         except Exception:
@@ -284,9 +303,9 @@ def decrypt_auth(path, password):
     if data[:3] not in (b"v10", b"v11"):
         raise RuntimeError("未知的登录态格式（magic=%r）" % data[:3])
 
-    # Chromium OSCrypt（Linux）：AES-128-CBC，key=PBKDF2-SHA1(pw,"saltysalt",1,16)，
-    # IV 固定为 16 个空格，密文前 3 字节是版本号。
-    key = hashlib.pbkdf2_hmac("sha1", password, KEYRING_SALT, 1, 16)
+    # Chromium OSCrypt：AES-128-CBC，IV 为 16 个空格；macOS 的 PBKDF2 迭代 1003 次，Linux 为 1 次。
+    iterations = 1003 if sys.platform == "darwin" else 1
+    key = hashlib.pbkdf2_hmac("sha1", password, KEYRING_SALT, iterations, 16)
     pt = _openssl_decrypt_aes_cbc(data[3:], key, SAFE_STORAGE_IV)
     if pt:
         pad = pt[-1]

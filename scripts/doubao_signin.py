@@ -386,7 +386,20 @@ def do_checkin(claim=True):
         ctx = browser.new_context(
             storage_state=STATE_FILE, user_agent=samantha_ua(),
             locale="zh-CN", viewport={"width": 1280, "height": 900})
+        campaign_state = {"not_found": False}
+
+        def _campaign_response(response):
+            if "/alice/ug/campaign/v3/detail/" not in response.url:
+                return
+            try:
+                payload = response.json()
+                if payload.get("message") == "campaign not found":
+                    campaign_state["not_found"] = True
+            except Exception:
+                pass
+
         page = ctx.new_page()
+        page.on("response", _campaign_response)
         try:
             page.goto(CHECKIN_URL, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT * 1000)
             page.wait_for_timeout(SETTLE_MS)
@@ -413,9 +426,14 @@ def do_checkin(claim=True):
                                      "可设置 DOUBAO_APP_VERSION 后重试" % app_version()}
             if not card and "立即签到" not in body and "每日签到" not in body \
                     and "已签到" not in body:
+                base["page_hint"] = re.sub(r"\s+", " ", body)[:160]
+                if campaign_state["not_found"]:
+                    base["campaign_status"] = "not_found"
+                    return 0, {"result": "INACTIVE", "diag": base,
+                               "report": "豆包服务端未找到当前活动配置（campaign not found），"
+                                         "活动可能已结束或暂未开放"}
                 shot = _shot(page)
                 base["screenshot"] = shot
-                base["page_hint"] = re.sub(r"\s+", " ", body)[:160]
                 return 1, {"result": "ERROR", "diag": base,
                            "report": "页面未出现签到模块（活动可能未开放/改版）；"
                                      "可用 DOUBAO_HEADED=1 打开窗口查看"}
